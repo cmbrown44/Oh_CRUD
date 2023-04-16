@@ -1,54 +1,72 @@
-from aws_cdk import (
-    Stack,
-    aws_dynamodb as ddb,
-    aws_lambda as _lambda,
-    aws_apigateway as apigw,
-    aws_iam as iam,        
-    # aws_sqs as sqs,
-)
-from aws_cdk.aws_apigateway import LambdaIntegration as apihttp
-from constructs import Construct
+import json
+import os
+import logging
+import boto3
 
-class OhCrudStack(Stack):
+LOG = logging.getLogger()
+LOG.setLevel(logging.INFO)
+ddb = boto3.resource('dynamodb').Table(os.environ['OHC_TABLE_NAME'])
 
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
-        super().__init__(scope, construct_id, **kwargs)
+def main(event, context):
 
-        # The code that defines your stack goes here
+    '''Provide an event that contains the following keys:
 
-        ohc_table = ddb.Table(self, "OhCrudTable",
-        partition_key=ddb.Attribute(name="id", type=ddb.AttributeType.STRING))
+      - operation: one of the operations in the operations dict below
+      - payload: a JSON object containing parameters to pass to the 
+                 operation being performed
+    '''
 
-        ohc_function = _lambda.Function(self, "OhCrudFunction",
-        handler="handler.main",
-        code=_lambda.Code.from_asset("./lambda"),
-        runtime=_lambda.Runtime.PYTHON_3_9,
-        environment={
-                'OHC_TABLE_NAME': ohc_table.table_name,
-            })
+    LOG.info('request: {}'.format(json.dumps(event)))
 
-         # create role that grants permissions to upload logs to CloudWatch
-        assert ohc_function.role is not None
-        ohc_function.role.add_managed_policy(
-            iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
+    operation = event['httpMethod']
+    if operation is not None:
+        return table_operations(event)
+    
+    return {
+        'statusCode': 200,
+        'body': 'enter operation',
+    }
+
+def table_operations(event):
+
+    body = ''
+
+    if event['httpMethod'] == "GET" and event['path'] == "items":
+        body = ddb.scan()
+        response = body['Items']
+    
+    elif event['httpMethod'] == "PUT" and event['path'] == "items":
+        item_body = event['item']
+        LOG.info(event['item'])
+        ddb.put_item(Item = {
+            "id" : item_body
+        })
+        body = f"Put item {item_body}"
+        LOG.info(body)
+    
+    elif event['httpMethod'] == "GET" and event['pathParameters'] == "id":
+        LOG.info(event['id'])
+        body = ddb.get_item(
+            Key = {
+                "id": event['id']
+            }
         )
+        result = body
+        LOG.info(result)
 
-        ohc_table.grant_read_write_data(ohc_function)
+    elif event['httpMethod'] == 'DELETE' and event['pathParameters'] == "id":
+        body = ddb.delete_item(
+            Key={
+                "id": event['id']
+            }
+        )
+        body = f"Deleted item {event['id']}"
 
-        ohc_api = apigw.LambdaRestApi(self, "OhCApi",
-        handler=ohc_function,
-        proxy=False)
+    body = json.dumps(body)
 
-        items = ohc_api.root.add_resource("items")
-        items.add_method("GET") # GET /items
-        items.add_method("PUT") # PUT /items
+    return {
+    'statusCode': 200,
+    'body': body,
+    'headers': 'Content-Type',
+    }
 
-        item_id = items.add_resource("{id}")
-        item_id.add_method("GET") # GET /items/{id}
-        item_id.add_method("DELETE") # DELETE /items/{id}
-
-        # example resource
-        # queue = sqs.Queue(
-        #     self, "OhCrudQueue",
-        #     visibility_timeout=Duration.seconds(300),
-        # )
